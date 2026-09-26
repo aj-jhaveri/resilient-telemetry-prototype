@@ -4,9 +4,13 @@
 //! safety-certified software and must not be used to control hardware.
 
 mod control;
+mod sequence;
 mod telemetry;
 
-pub use control::{Command, CommandMode, CommandReason, ControlState, Controller, Rejection};
+pub use control::{
+    Command, CommandMode, CommandReason, ControlState, Controller, Rejection, Update,
+};
+pub use sequence::{SequenceError, SequenceGate};
 pub use telemetry::{DecodeError, Telemetry, ValidationError};
 
 /// The only telemetry message version this build accepts.
@@ -21,8 +25,9 @@ pub const LONGITUDE_MAX_DEG: f64 = 180.0;
 /// Heading bounds in degrees: minimum inclusive, maximum exclusive.
 pub const HEADING_MIN_DEG: f64 = 0.0;
 pub const HEADING_MAX_DEG: f64 = 360.0;
-/// Inclusive minimum speed in metres per second.
+/// Inclusive speed bounds in metres per second.
 pub const SPEED_MIN_MPS: f64 = 0.0;
+pub const SPEED_MAX_MPS: f64 = 20.0;
 /// Inclusive battery bounds in percent.
 pub const BATTERY_MIN_PERCENT: f32 = 0.0;
 pub const BATTERY_MAX_PERCENT: f32 = 100.0;

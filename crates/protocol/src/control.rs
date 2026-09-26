@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use crate::sequence::{SequenceError, SequenceGate};
 use crate::telemetry::{DecodeError, Telemetry};
 use crate::{
     AUTONOMOUS_RUDDER, AUTONOMOUS_THROTTLE, RUDDER_MAX, RUDDER_MIN, SAFE_STOP_RUDDER,
@@ -116,10 +117,18 @@ impl Command {
 pub enum Rejection {
     #[error(transparent)]
     Decode(#[from] DecodeError),
-    #[error("duplicate sequence {0}")]
-    Duplicate(u64),
-    #[error("out-of-order sequence {received} (last accepted {last_accepted})")]
-    OutOfOrder { received: u64, last_accepted: u64 },
+    #[error(transparent)]
+    Sequence(#[from] SequenceError),
+}
+
+/// Result of accepting one telemetry packet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Update {
+    pub telemetry: Telemetry,
+    /// SafeStop command emitted because the freshness deadline had already
+    /// passed when this packet arrived, before it was accepted.
+    pub timeout_command: Option<Command>,
+    pub command: Command,
 }
 
 /// Tracks accepted telemetry and decides the control state.
@@ -127,7 +136,7 @@ pub enum Rejection {
 pub struct Controller {
     state: ControlState,
     timeout: Duration,
-    last_sequence: Option<u64>,
+    gate: SequenceGate,
     last_accepted_at: Option<Instant>,
     next_command_sequence: u64,
 }
@@ -137,7 +146,7 @@ impl Controller {
         Self {
             state: ControlState::WaitingForTelemetry,
             timeout,
-            last_sequence: None,
+            gate: SequenceGate::default(),
             last_accepted_at: None,
             next_command_sequence: 1,
         }
@@ -148,18 +157,13 @@ impl Controller {
     }
 
     pub fn last_accepted_sequence(&self) -> Option<u64> {
-        self.last_sequence
+        self.gate.last_accepted()
     }
 
     /// Decodes, validates, and sequence-checks one datagram.
-    pub fn handle_datagram(
-        &mut self,
-        bytes: &[u8],
-        now: Instant,
-    ) -> Result<(Telemetry, Command), Rejection> {
+    pub fn handle_datagram(&mut self, bytes: &[u8], now: Instant) -> Result<Update, Rejection> {
         let telemetry = Telemetry::decode(bytes)?;
-        let command = self.accept_sequence(telemetry.sequence, now)?;
-        Ok((telemetry, command))
+        self.accept(telemetry, now)
     }
 
     /// Validates and sequence-checks already-parsed telemetry.
@@ -167,9 +171,9 @@ impl Controller {
         &mut self,
         telemetry: &Telemetry,
         now: Instant,
-    ) -> Result<Command, Rejection> {
+    ) -> Result<Update, Rejection> {
         telemetry.validate().map_err(DecodeError::from)?;
-        self.accept_sequence(telemetry.sequence, now)
+        self.accept(telemetry.clone(), now)
     }
 
     /// Evaluates freshness. Returns a SafeStop command only on the
@@ -186,22 +190,20 @@ impl Controller {
         Some(Command::safe_stop(self.next_sequence()))
     }
 
-    fn accept_sequence(&mut self, sequence: u64, now: Instant) -> Result<Command, Rejection> {
-        if let Some(last_accepted) = self.last_sequence {
-            if sequence == last_accepted {
-                return Err(Rejection::Duplicate(sequence));
-            }
-            if sequence < last_accepted {
-                return Err(Rejection::OutOfOrder {
-                    received: sequence,
-                    last_accepted,
-                });
-            }
-        }
-        self.last_sequence = Some(sequence);
+    fn accept(&mut self, telemetry: Telemetry, now: Instant) -> Result<Update, Rejection> {
+        self.gate.check_and_record(telemetry.sequence)?;
+        // Judge freshness at the arrival instant, before this packet
+        // refreshes it, so the outcome does not depend on when the caller
+        // last called `tick`.
+        let timeout_command = self.tick(now);
         self.last_accepted_at = Some(now);
         self.state = ControlState::Autonomous;
-        Ok(Command::autonomous(self.next_sequence()))
+        let command = Command::autonomous(self.next_sequence());
+        Ok(Update {
+            telemetry,
+            timeout_command,
+            command,
+        })
     }
 
     fn next_sequence(&mut self) -> u64 {
@@ -249,13 +251,14 @@ mod tests {
     fn first_valid_telemetry_of_any_sequence_becomes_autonomous() {
         let t0 = Instant::now();
         let mut controller = Controller::new(timeout());
-        let command = controller
+        let update = controller
             .on_telemetry(&telemetry(42), t0)
             .expect("accepted");
         assert_eq!(controller.state(), ControlState::Autonomous);
         assert_eq!(controller.last_accepted_sequence(), Some(42));
-        assert_eq!(command.mode(), CommandMode::Autonomous);
-        assert_eq!(command.reason(), CommandReason::ValidTelemetry);
+        assert_eq!(update.timeout_command, None);
+        assert_eq!(update.command.mode(), CommandMode::Autonomous);
+        assert_eq!(update.command.reason(), CommandReason::ValidTelemetry);
     }
 
     #[test]
@@ -274,14 +277,14 @@ mod tests {
         let mut controller = autonomous_at(5, t0);
         assert!(matches!(
             controller.on_telemetry(&telemetry(5), t0),
-            Err(Rejection::Duplicate(5))
+            Err(Rejection::Sequence(SequenceError::Duplicate(5)))
         ));
         assert!(matches!(
             controller.on_telemetry(&telemetry(4), t0),
-            Err(Rejection::OutOfOrder {
+            Err(Rejection::Sequence(SequenceError::OutOfOrder {
                 received: 4,
                 last_accepted: 5
-            })
+            }))
         ));
         assert_eq!(controller.last_accepted_sequence(), Some(5));
     }
@@ -295,7 +298,7 @@ mod tests {
         assert!(matches!(
             controller.on_telemetry(&bad, t0),
             Err(Rejection::Decode(DecodeError::Invalid(
-                ValidationError::NegativeSpeed(_)
+                ValidationError::SpeedOutOfRange(_)
             )))
         ));
         assert_eq!(controller.state(), ControlState::WaitingForTelemetry);
@@ -319,8 +322,8 @@ mod tests {
         let t0 = Instant::now();
         let mut controller = Controller::new(timeout());
         let bytes = telemetry(1).encode().expect("encode");
-        let (accepted, _) = controller.handle_datagram(&bytes, t0).expect("accepted");
-        assert_eq!(accepted.sequence, 1);
+        let update = controller.handle_datagram(&bytes, t0).expect("accepted");
+        assert_eq!(update.telemetry.sequence, 1);
         assert_eq!(controller.state(), ControlState::Autonomous);
     }
 
@@ -344,6 +347,31 @@ mod tests {
             assert_eq!(controller.tick(t0 + later), None);
             assert_eq!(controller.state(), ControlState::SafeStop);
         }
+    }
+
+    #[test]
+    fn packet_arriving_after_deadline_reports_timeout_before_acceptance() {
+        let t0 = Instant::now();
+        let mut controller = autonomous_at(1, t0);
+        // No tick between the two packets: the gap is judged on arrival.
+        let update = controller
+            .on_telemetry(&telemetry(2), t0 + timeout())
+            .expect("accepted");
+        let safe_stop = update.timeout_command.expect("timeout detected on arrival");
+        assert_eq!(safe_stop.mode(), CommandMode::SafeStop);
+        assert_eq!(update.command.mode(), CommandMode::Autonomous);
+        assert!(safe_stop.sequence() < update.command.sequence());
+        assert_eq!(controller.state(), ControlState::Autonomous);
+    }
+
+    #[test]
+    fn packet_arriving_before_deadline_reports_no_timeout() {
+        let t0 = Instant::now();
+        let mut controller = autonomous_at(1, t0);
+        let update = controller
+            .on_telemetry(&telemetry(2), t0 + timeout() - ONE_MS)
+            .expect("accepted");
+        assert_eq!(update.timeout_command, None);
     }
 
     #[test]
@@ -388,11 +416,11 @@ mod tests {
         assert_eq!(controller.state(), ControlState::SafeStop);
 
         let t1 = t0 + timeout() * 2;
-        let command = controller
+        let update = controller
             .on_telemetry(&telemetry(2), t1)
             .expect("accepted");
         assert_eq!(controller.state(), ControlState::Autonomous);
-        assert_eq!(command.mode(), CommandMode::Autonomous);
+        assert_eq!(update.command.mode(), CommandMode::Autonomous);
 
         // Freshness is measured from the new packet, so SafeStop can recur.
         assert!(controller.tick(t1 + timeout()).is_some());
@@ -406,13 +434,15 @@ mod tests {
         commands.push(
             controller
                 .on_telemetry(&telemetry(1), t0)
-                .expect("accepted"),
+                .expect("accepted")
+                .command,
         );
         commands.extend(controller.tick(t0 + timeout()));
         commands.push(
             controller
                 .on_telemetry(&telemetry(2), t0 + timeout() * 2)
-                .expect("accepted"),
+                .expect("accepted")
+                .command,
         );
 
         let autonomous = &commands[0];

@@ -56,17 +56,22 @@ fn run(args: &Args) -> std::io::Result<()> {
 fn poll_once(socket: &UdpSocket, controller: &mut Controller, buf: &mut [u8]) {
     match socket.recv_from(buf) {
         Ok((len, from)) => {
-            let before = controller.state();
+            let mut before = controller.state();
             match controller.handle_datagram(&buf[..len], Instant::now()) {
-                Ok((telemetry, command)) => {
+                Ok(update) => {
+                    if let Some(command) = &update.timeout_command {
+                        log_transition(before, ControlState::SafeStop);
+                        log_command(command);
+                        before = ControlState::SafeStop;
+                    }
                     info!(
-                        sequence = telemetry.sequence,
-                        sent_at_ms = telemetry.sent_at_ms,
+                        sequence = update.telemetry.sequence,
+                        sent_at_ms = update.telemetry.sent_at_ms,
                         %from,
                         "accepted telemetry"
                     );
                     log_transition(before, controller.state());
-                    log_command(&command);
+                    log_command(&update.command);
                 }
                 Err(rejection) => {
                     warn!(%from, bytes = len, reason = %rejection, "ignored datagram")

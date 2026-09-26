@@ -5,7 +5,8 @@ use thiserror::Error;
 
 use crate::{
     BATTERY_MAX_PERCENT, BATTERY_MIN_PERCENT, HEADING_MAX_DEG, HEADING_MIN_DEG, LATITUDE_MAX_DEG,
-    LATITUDE_MIN_DEG, LONGITUDE_MAX_DEG, LONGITUDE_MIN_DEG, SPEED_MIN_MPS, SUPPORTED_VERSION,
+    LATITUDE_MIN_DEG, LONGITUDE_MAX_DEG, LONGITUDE_MIN_DEG, SPEED_MAX_MPS, SPEED_MIN_MPS,
+    SUPPORTED_VERSION,
 };
 
 // Fixed, valid, Austin-like values used by the simulated sensor.
@@ -45,8 +46,8 @@ pub enum ValidationError {
     LongitudeOutOfRange(f64),
     #[error("heading_deg {0} is out of range")]
     HeadingOutOfRange(f64),
-    #[error("speed_mps {0} is negative")]
-    NegativeSpeed(f64),
+    #[error("speed_mps {0} is out of range")]
+    SpeedOutOfRange(f64),
     #[error("battery_percent {0} is out of range")]
     BatteryOutOfRange(f32),
 }
@@ -117,8 +118,8 @@ impl Telemetry {
         if !(HEADING_MIN_DEG..HEADING_MAX_DEG).contains(&self.heading_deg) {
             return Err(ValidationError::HeadingOutOfRange(self.heading_deg));
         }
-        if self.speed_mps < SPEED_MIN_MPS {
-            return Err(ValidationError::NegativeSpeed(self.speed_mps));
+        if !(SPEED_MIN_MPS..=SPEED_MAX_MPS).contains(&self.speed_mps) {
+            return Err(ValidationError::SpeedOutOfRange(self.speed_mps));
         }
         if !(BATTERY_MIN_PERCENT..=BATTERY_MAX_PERCENT).contains(&self.battery_percent) {
             return Err(ValidationError::BatteryOutOfRange(self.battery_percent));
@@ -277,13 +278,16 @@ mod tests {
     }
 
     #[test]
-    fn negative_speed_is_rejected() {
-        assert_eq!(with(|t| t.speed_mps = SPEED_MIN_MPS).validate(), Ok(()));
-        let bad = SPEED_MIN_MPS - STEP;
-        assert_eq!(
-            with(|t| t.speed_mps = bad).validate(),
-            Err(ValidationError::NegativeSpeed(bad))
-        );
+    fn speed_bounds_are_inclusive() {
+        for ok in [SPEED_MIN_MPS, SPEED_MAX_MPS] {
+            assert_eq!(with(|t| t.speed_mps = ok).validate(), Ok(()));
+        }
+        for bad in [SPEED_MIN_MPS - STEP, SPEED_MAX_MPS + STEP] {
+            assert_eq!(
+                with(|t| t.speed_mps = bad).validate(),
+                Err(ValidationError::SpeedOutOfRange(bad))
+            );
+        }
     }
 
     #[test]
@@ -305,7 +309,7 @@ mod tests {
         let bytes = with(|t| t.speed_mps = -1.0).encode().expect("encode");
         assert!(matches!(
             Telemetry::decode(&bytes),
-            Err(DecodeError::Invalid(ValidationError::NegativeSpeed(_)))
+            Err(DecodeError::Invalid(ValidationError::SpeedOutOfRange(_)))
         ));
     }
 }

@@ -37,7 +37,7 @@ two error kinds:
      overflows `f32` to infinity, so this check is reachable from the wire.
   3. Latitude must be in `[-90, 90]` and longitude in `[-180, 180]`.
   4. Heading must be in `[0, 360)`.
-  5. Speed must be at least 0.
+  5. Speed must be in `[0, 20]` m/s.
   6. Battery must be in `[0, 100]`.
 
 The limits are constants in `crates/protocol/src/lib.rs`.
@@ -47,7 +47,7 @@ The limits are constants in `crates/protocol/src/lib.rs`.
 - The first valid packet is accepted, whatever its sequence.
 - Each later packet needs a strictly greater sequence. Gaps are allowed.
 - An equal sequence is rejected as `Duplicate`. A smaller one is rejected as
-  `OutOfOrder`.
+  `OutOfOrder`. `SequenceGate` holds this rule.
 - A rejected packet changes neither the state, the stored sequence, nor the
   freshness timestamp. `control-node` logs it and continues.
 
@@ -77,8 +77,10 @@ at 1.
 
 `control-node` uses a 50 ms socket read timeout and calls `tick` after every
 receive attempt. SafeStop is detected up to about 50 ms after the deadline,
-plus scheduling delay. The controller takes `now: Instant` as a parameter, so
-tests can pass synthetic instants.
+plus scheduling delay. An accepted packet is also checked against the
+deadline at its arrival instant, before it refreshes freshness. If the
+deadline has passed, the SafeStop command is emitted first. The controller
+takes `now: Instant` as a parameter, so tests can pass synthetic instants.
 
 ## Deterministic link behavior
 
