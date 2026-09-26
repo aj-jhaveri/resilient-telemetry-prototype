@@ -3,12 +3,17 @@
 //! This is a learning prototype. It is not production, real-time, or
 //! safety-certified software and must not be used to control hardware.
 
+mod command;
 mod control;
 mod p_control;
 mod plant;
 mod sequence;
 mod telemetry;
 
+pub use command::{
+    Applied, CommandDecodeError, CommandMessage, CommandReceiver, CommandRejection,
+    CommandValidationError,
+};
 pub use control::{
     Command, CommandMode, CommandReason, ControlState, Controller, Rejection, Update,
 };
@@ -51,6 +56,12 @@ pub const SAFE_STOP_THROTTLE: f64 = 0.0;
 
 /// Default freshness timeout used by `control-node`.
 pub const DEFAULT_TIMEOUT_MS: u64 = 750;
+/// The only command message version this build sends or accepts.
+pub const COMMAND_VERSION: u8 = 1;
+/// Default command watchdog used by `sensor-node`. It is longer than
+/// `DEFAULT_TIMEOUT_MS` because commands are sent only when telemetry is
+/// accepted, so healthy command gaps can approach the telemetry timeout.
+pub const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 1000;
 /// Address `link-sim` listens on and `sensor-node` sends to by default.
 pub const DEFAULT_LINK_ADDR: &str = "127.0.0.1:9100";
 /// Address `control-node` binds and `link-sim` forwards to by default.

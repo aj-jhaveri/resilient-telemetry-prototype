@@ -7,6 +7,7 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::sequence::{SequenceError, SequenceGate};
@@ -25,14 +26,16 @@ pub enum ControlState {
 }
 
 /// Mode carried by an emitted command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CommandMode {
     Autonomous,
     SafeStop,
 }
 
-/// Why a command was emitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why a command was emitted. The serde names match `as_str`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CommandReason {
     ValidTelemetry,
     TelemetryTimeout,
