@@ -202,7 +202,11 @@ impl CommandReceiver {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::{Controller, Telemetry, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_TIMEOUT_MS};
+    use crate::{
+        Controller, ControllerConfig, Setpoint, Telemetry, DEFAULT_COMMAND_TIMEOUT_MS,
+        DEFAULT_RECOVERY_PACKETS, DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS,
+        DEFAULT_TIMEOUT_MS,
+    };
 
     const ONE_MS: Duration = Duration::from_millis(1);
 
@@ -243,11 +247,17 @@ mod tests {
 
     #[test]
     fn controller_command_round_trips_through_the_wire_message() {
-        let mut controller = Controller::new(Duration::from_millis(DEFAULT_TIMEOUT_MS));
+        let mut controller = Controller::new(ControllerConfig {
+            timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
+            recovery_packets: DEFAULT_RECOVERY_PACKETS,
+            setpoint: Setpoint::new(DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS)
+                .expect("setpoint"),
+        });
         let command = controller
             .on_telemetry(&Telemetry::simulated(1, 0), Instant::now())
             .expect("accepted")
-            .command;
+            .command
+            .expect("autonomous command");
         let message = command.to_message();
         let decoded = CommandMessage::decode(&bytes(&message)).expect("decode");
         assert_eq!(decoded, message);

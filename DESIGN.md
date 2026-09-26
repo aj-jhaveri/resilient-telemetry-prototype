@@ -58,21 +58,27 @@ rejects those packets until it is restarted too.
 
 The states are `WaitingForTelemetry` (initial), `Autonomous`, and `SafeStop`.
 
-- An accepted packet records the local `Instant` it arrived, moves the state to
-  `Autonomous`, and emits an `Autonomous` command: rudder `0.0`, throttle
-  `0.25`, reason `valid_telemetry`.
+- An accepted packet records the local `Instant` it arrived. From
+  `WaitingForTelemetry` or `Autonomous` it moves the state to `Autonomous` and
+  emits an `Autonomous` command with reason `valid_telemetry`. Its rudder and
+  throttle come from the proportional control law.
 - `tick(now)` moves the state from `Autonomous` to `SafeStop` once
   `now - last_accepted >= timeout` (750 ms by default). On that transition
   only, it emits one command: rudder `0.0`, throttle `0.0`, reason
   `telemetry_timeout`. Later ticks in `SafeStop` emit nothing.
 - `WaitingForTelemetry` never times out.
-- A new accepted packet returns the state from `SafeStop` to `Autonomous`.
+- Leaving `SafeStop` needs 3 consecutive accepted packets, each less than
+  `timeout` after the previous one. A longer gap resets the streak to 1.
+  Until the streak completes, accepted packets emit no command. With
+  packets 1000 ms apart, the node therefore stays in `SafeStop` instead of
+  toggling once per packet.
 - The controller never reads `sent_at_ms`. Clocks on different hosts are not
   comparable, and the local clock is monotonic.
 
-`Command` fields are private, and the only constructors are the two fixed
-variants above. Every command therefore stays within rudder `[-1, 1]` and
-throttle `[0, 1]`. Command sequences come from their own counter, which starts
+`Command` fields are private. The `Autonomous` constructor takes an
+already-clamped `Actuation`, and the `SafeStop` constructor uses fixed
+values. Every command therefore stays within rudder `[-1, 1]` and throttle
+`[0, 1]`. Command sequences come from their own counter, which starts
 at 1.
 
 `control-node` uses a 50 ms socket read timeout and calls `tick` after every

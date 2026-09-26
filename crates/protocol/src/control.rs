@@ -1,4 +1,5 @@
-//! Control state machine: sequence checks, freshness, and SafeStop.
+//! Control state machine: sequence checks, freshness, SafeStop with recovery
+//! hysteresis, and P-control commands.
 //!
 //! Every method takes `now: Instant` from the caller. `control-node` passes
 //! `Instant::now()`; tests pass synthetic instants so timeouts are
@@ -10,11 +11,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::p_control::{p_control, Setpoint};
+use crate::plant::Actuation;
 use crate::sequence::{SequenceError, SequenceGate};
 use crate::telemetry::{DecodeError, Telemetry};
 use crate::{
-    AUTONOMOUS_RUDDER, AUTONOMOUS_THROTTLE, RUDDER_MAX, RUDDER_MIN, SAFE_STOP_RUDDER,
-    SAFE_STOP_THROTTLE, THROTTLE_MAX, THROTTLE_MIN,
+    RUDDER_MAX, RUDDER_MIN, SAFE_STOP_RUDDER, SAFE_STOP_THROTTLE, THROTTLE_MAX, THROTTLE_MIN,
 };
 
 /// Controller state.
@@ -57,7 +59,9 @@ impl fmt::Display for CommandReason {
 }
 
 /// A command produced by the controller. It can only be built through the
-/// two private constructors below, so its values are fixed and bounded.
+/// two private constructors below: `autonomous` takes an already-clamped
+/// `Actuation`, and `safe_stop` uses the SafeStop constants. Every command
+/// is therefore bounded.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
     sequence: u64,
@@ -68,12 +72,12 @@ pub struct Command {
 }
 
 impl Command {
-    fn autonomous(sequence: u64) -> Self {
+    fn autonomous(sequence: u64, actuation: Actuation) -> Self {
         Self {
             sequence,
             mode: CommandMode::Autonomous,
-            rudder: AUTONOMOUS_RUDDER,
-            throttle: AUTONOMOUS_THROTTLE,
+            rudder: actuation.rudder(),
+            throttle: actuation.throttle(),
             reason: CommandReason::ValidTelemetry,
         }
     }
@@ -131,7 +135,19 @@ pub struct Update {
     /// SafeStop command emitted because the freshness deadline had already
     /// passed when this packet arrived, before it was accepted.
     pub timeout_command: Option<Command>,
-    pub command: Command,
+    /// Autonomous command, or `None` while SafeStop recovery is incomplete.
+    pub command: Option<Command>,
+}
+
+/// Controller settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControllerConfig {
+    /// Time without accepted telemetry before SafeStop.
+    pub timeout: Duration,
+    /// Consecutive fresh packets needed to leave SafeStop. Values below 1
+    /// behave as 1.
+    pub recovery_packets: u32,
+    pub setpoint: Setpoint,
 }
 
 /// Tracks accepted telemetry and decides the control state.
@@ -139,18 +155,24 @@ pub struct Update {
 pub struct Controller {
     state: ControlState,
     timeout: Duration,
+    recovery_packets: u32,
+    setpoint: Setpoint,
     gate: SequenceGate,
     last_accepted_at: Option<Instant>,
+    recovery_streak: u32,
     next_command_sequence: u64,
 }
 
 impl Controller {
-    pub fn new(timeout: Duration) -> Self {
+    pub fn new(config: ControllerConfig) -> Self {
         Self {
             state: ControlState::WaitingForTelemetry,
-            timeout,
+            timeout: config.timeout,
+            recovery_packets: config.recovery_packets.max(1),
+            setpoint: config.setpoint,
             gate: SequenceGate::default(),
             last_accepted_at: None,
+            recovery_streak: 0,
             next_command_sequence: 1,
         }
     }
@@ -161,6 +183,15 @@ impl Controller {
 
     pub fn last_accepted_sequence(&self) -> Option<u64> {
         self.gate.last_accepted()
+    }
+
+    /// Consecutive fresh packets counted so far while in `SafeStop`.
+    pub fn recovery_streak(&self) -> u32 {
+        self.recovery_streak
+    }
+
+    pub fn recovery_packets(&self) -> u32 {
+        self.recovery_packets
     }
 
     /// Decodes, validates, and sequence-checks one datagram.
@@ -190,6 +221,7 @@ impl Controller {
             return None;
         }
         self.state = ControlState::SafeStop;
+        self.recovery_streak = 0;
         Some(Command::safe_stop(self.next_sequence()))
     }
 
@@ -199,9 +231,34 @@ impl Controller {
         // refreshes it, so the outcome does not depend on when the caller
         // last called `tick`.
         let timeout_command = self.tick(now);
+        let fresh_gap = self
+            .last_accepted_at
+            .is_some_and(|at| now.saturating_duration_since(at) < self.timeout);
         self.last_accepted_at = Some(now);
-        self.state = ControlState::Autonomous;
-        let command = Command::autonomous(self.next_sequence());
+
+        let resume = match self.state {
+            ControlState::WaitingForTelemetry | ControlState::Autonomous => true,
+            ControlState::SafeStop => {
+                // Hysteresis: leave SafeStop only after `recovery_packets`
+                // consecutive packets, each within `timeout` of the last.
+                self.recovery_streak = if fresh_gap {
+                    self.recovery_streak.saturating_add(1)
+                } else {
+                    1
+                };
+                self.recovery_streak >= self.recovery_packets
+            }
+        };
+
+        let command = if resume {
+            self.state = ControlState::Autonomous;
+            self.recovery_streak = 0;
+            let actuation = p_control(self.setpoint, &telemetry);
+            Some(Command::autonomous(self.next_sequence(), actuation))
+        } else {
+            None
+        };
+
         Ok(Update {
             telemetry,
             timeout_command,
@@ -221,7 +278,10 @@ impl Controller {
 mod tests {
     use super::*;
     use crate::telemetry::ValidationError;
-    use crate::DEFAULT_TIMEOUT_MS;
+    use crate::{
+        DEFAULT_RECOVERY_PACKETS, DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS,
+        DEFAULT_TIMEOUT_MS,
+    };
 
     const ONE_MS: Duration = Duration::from_millis(1);
 
@@ -229,22 +289,50 @@ mod tests {
         Duration::from_millis(DEFAULT_TIMEOUT_MS)
     }
 
+    fn setpoint() -> Setpoint {
+        Setpoint::new(DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS).expect("setpoint")
+    }
+
+    fn controller_with(recovery_packets: u32) -> Controller {
+        Controller::new(ControllerConfig {
+            timeout: timeout(),
+            recovery_packets,
+            setpoint: setpoint(),
+        })
+    }
+
+    fn controller() -> Controller {
+        controller_with(DEFAULT_RECOVERY_PACKETS)
+    }
+
     fn telemetry(sequence: u64) -> Telemetry {
         Telemetry::simulated(sequence, 0)
     }
 
     fn autonomous_at(sequence: u64, now: Instant) -> Controller {
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller();
         controller
             .on_telemetry(&telemetry(sequence), now)
             .expect("first valid telemetry is accepted");
         controller
     }
 
+    /// Puts a controller into SafeStop at `t0 + timeout` after one packet
+    /// at `t0`.
+    fn safe_stopped(recovery_packets: u32, t0: Instant) -> Controller {
+        let mut controller = controller_with(recovery_packets);
+        controller
+            .on_telemetry(&telemetry(1), t0)
+            .expect("accepted");
+        assert!(controller.tick(t0 + timeout()).is_some());
+        assert_eq!(controller.state(), ControlState::SafeStop);
+        controller
+    }
+
     #[test]
     fn starts_waiting_and_never_times_out_without_telemetry() {
         let t0 = Instant::now();
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller();
         assert_eq!(controller.state(), ControlState::WaitingForTelemetry);
         assert_eq!(controller.tick(t0 + timeout() * 10), None);
         assert_eq!(controller.state(), ControlState::WaitingForTelemetry);
@@ -253,15 +341,31 @@ mod tests {
     #[test]
     fn first_valid_telemetry_of_any_sequence_becomes_autonomous() {
         let t0 = Instant::now();
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller();
         let update = controller
             .on_telemetry(&telemetry(42), t0)
             .expect("accepted");
         assert_eq!(controller.state(), ControlState::Autonomous);
         assert_eq!(controller.last_accepted_sequence(), Some(42));
         assert_eq!(update.timeout_command, None);
-        assert_eq!(update.command.mode(), CommandMode::Autonomous);
-        assert_eq!(update.command.reason(), CommandReason::ValidTelemetry);
+        let command = update.command.expect("autonomous command");
+        assert_eq!(command.mode(), CommandMode::Autonomous);
+        assert_eq!(command.reason(), CommandReason::ValidTelemetry);
+    }
+
+    #[test]
+    fn autonomous_command_carries_the_p_control_output() {
+        let t0 = Instant::now();
+        let mut controller = controller();
+        let sample = telemetry(1);
+        let command = controller
+            .on_telemetry(&sample, t0)
+            .expect("accepted")
+            .command
+            .expect("autonomous command");
+        let expected = p_control(setpoint(), &sample);
+        assert_eq!(command.rudder(), expected.rudder());
+        assert_eq!(command.throttle(), expected.throttle());
     }
 
     #[test]
@@ -295,7 +399,7 @@ mod tests {
     #[test]
     fn invalid_telemetry_does_not_advance_sequence() {
         let t0 = Instant::now();
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller();
         let mut bad = telemetry(9);
         bad.speed_mps = -1.0;
         assert!(matches!(
@@ -311,7 +415,7 @@ mod tests {
     #[test]
     fn malformed_datagram_is_rejected_without_state_change() {
         let t0 = Instant::now();
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller();
         assert!(matches!(
             controller.handle_datagram(b"{not json", t0),
             Err(Rejection::Decode(DecodeError::Malformed(_)))
@@ -323,7 +427,7 @@ mod tests {
     #[test]
     fn handle_datagram_accepts_encoded_telemetry() {
         let t0 = Instant::now();
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller();
         let bytes = telemetry(1).encode().expect("encode");
         let update = controller.handle_datagram(&bytes, t0).expect("accepted");
         assert_eq!(update.telemetry.sequence, 1);
@@ -362,9 +466,10 @@ mod tests {
             .expect("accepted");
         let safe_stop = update.timeout_command.expect("timeout detected on arrival");
         assert_eq!(safe_stop.mode(), CommandMode::SafeStop);
-        assert_eq!(update.command.mode(), CommandMode::Autonomous);
-        assert!(safe_stop.sequence() < update.command.sequence());
-        assert_eq!(controller.state(), ControlState::Autonomous);
+        // The late packet only starts the recovery streak.
+        assert_eq!(update.command, None);
+        assert_eq!(controller.state(), ControlState::SafeStop);
+        assert_eq!(controller.recovery_streak(), 1);
     }
 
     #[test]
@@ -375,6 +480,7 @@ mod tests {
             .on_telemetry(&telemetry(2), t0 + timeout() - ONE_MS)
             .expect("accepted");
         assert_eq!(update.timeout_command, None);
+        assert!(update.command.is_some());
     }
 
     #[test]
@@ -402,7 +508,7 @@ mod tests {
     #[test]
     fn sender_timestamp_does_not_affect_freshness() {
         let t0 = Instant::now();
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller();
         for (sequence, sent_at_ms) in [(1, 0), (2, u128::MAX)] {
             let sample = Telemetry::simulated(sequence, sent_at_ms);
             assert!(controller.on_telemetry(&sample, t0).is_ok());
@@ -412,48 +518,116 @@ mod tests {
     }
 
     #[test]
-    fn valid_telemetry_recovers_from_safe_stop() {
+    fn recovery_requires_consecutive_fresh_packets() {
         let t0 = Instant::now();
-        let mut controller = autonomous_at(1, t0);
-        assert!(controller.tick(t0 + timeout()).is_some());
-        assert_eq!(controller.state(), ControlState::SafeStop);
+        let mut controller = safe_stopped(DEFAULT_RECOVERY_PACKETS, t0);
+        let gap = timeout() - ONE_MS;
+        let first = t0 + timeout() * 2;
+        for index in 0..DEFAULT_RECOVERY_PACKETS {
+            let now = first + gap * index;
+            let update = controller
+                .on_telemetry(&telemetry(u64::from(index) + 2), now)
+                .expect("accepted");
+            assert_eq!(update.timeout_command, None);
+            if index + 1 < DEFAULT_RECOVERY_PACKETS {
+                assert_eq!(update.command, None, "packet {index}");
+                assert_eq!(controller.state(), ControlState::SafeStop);
+                assert_eq!(controller.recovery_streak(), index + 1);
+            } else {
+                let command = update.command.expect("recovered");
+                assert_eq!(command.mode(), CommandMode::Autonomous);
+                assert_eq!(controller.state(), ControlState::Autonomous);
+                assert_eq!(controller.recovery_streak(), 0);
+            }
+        }
+    }
 
+    #[test]
+    fn stale_gap_resets_the_recovery_streak() {
+        let t0 = Instant::now();
+        let mut controller = safe_stopped(DEFAULT_RECOVERY_PACKETS, t0);
         let t1 = t0 + timeout() * 2;
-        let update = controller
+        controller
             .on_telemetry(&telemetry(2), t1)
             .expect("accepted");
-        assert_eq!(controller.state(), ControlState::Autonomous);
-        assert_eq!(update.command.mode(), CommandMode::Autonomous);
+        controller
+            .on_telemetry(&telemetry(3), t1 + timeout() - ONE_MS)
+            .expect("accepted");
+        assert_eq!(controller.recovery_streak(), 2);
+        controller
+            .on_telemetry(&telemetry(4), t1 + timeout() * 3)
+            .expect("accepted");
+        assert_eq!(controller.recovery_streak(), 1);
+        assert_eq!(controller.state(), ControlState::SafeStop);
+    }
 
-        // Freshness is measured from the new packet, so SafeStop can recur.
-        assert!(controller.tick(t1 + timeout()).is_some());
+    #[test]
+    fn persistent_loss_enters_safe_stop_once_without_chattering() {
+        // Accepted packets every 1000 ms against a 750 ms timeout, with the
+        // node's 50 ms poll ticks in between: matches the packet-loss demo.
+        let t0 = Instant::now();
+        let mut controller = controller();
+        let packet_gap = Duration::from_millis(1000);
+        let poll = Duration::from_millis(50);
+        let mut commands = Vec::new();
+        for index in 0..10_u32 {
+            let arrival = t0 + packet_gap * index;
+            let update = controller
+                .on_telemetry(&telemetry(u64::from(index) + 1), arrival)
+                .expect("accepted");
+            commands.extend(update.timeout_command);
+            commands.extend(update.command);
+            for tick in 1..20 {
+                commands.extend(controller.tick(arrival + poll * tick));
+            }
+        }
+        let safe_stops = commands
+            .iter()
+            .filter(|c| c.mode() == CommandMode::SafeStop)
+            .count();
+        let autonomous = commands.len() - safe_stops;
+        assert_eq!(safe_stops, 1, "{commands:?}");
+        assert_eq!(autonomous, 1, "{commands:?}");
+        assert_eq!(controller.state(), ControlState::SafeStop);
+    }
+
+    #[test]
+    fn one_recovery_packet_recovers_immediately() {
+        let t0 = Instant::now();
+        let mut controller = safe_stopped(1, t0);
+        let update = controller
+            .on_telemetry(&telemetry(2), t0 + timeout() * 2)
+            .expect("accepted");
+        assert_eq!(controller.state(), ControlState::Autonomous);
+        assert!(update.command.is_some());
+    }
+
+    #[test]
+    fn zero_recovery_packets_behaves_as_one() {
+        assert_eq!(controller_with(0).recovery_packets(), 1);
     }
 
     #[test]
     fn every_command_is_bounded_and_sequenced() {
         let t0 = Instant::now();
-        let mut controller = Controller::new(timeout());
+        let mut controller = controller_with(1);
         let mut commands = Vec::new();
-        commands.push(
+        commands.extend(
             controller
                 .on_telemetry(&telemetry(1), t0)
                 .expect("accepted")
                 .command,
         );
         commands.extend(controller.tick(t0 + timeout()));
-        commands.push(
+        commands.extend(
             controller
                 .on_telemetry(&telemetry(2), t0 + timeout() * 2)
                 .expect("accepted")
                 .command,
         );
 
-        let autonomous = &commands[0];
-        assert_eq!(autonomous.rudder(), AUTONOMOUS_RUDDER);
-        assert_eq!(autonomous.throttle(), AUTONOMOUS_THROTTLE);
-        assert_eq!(autonomous.reason().as_str(), "valid_telemetry");
-
         assert_eq!(commands.len(), 3);
+        assert_eq!(commands[0].reason().as_str(), "valid_telemetry");
         assert_eq!(commands[1].mode(), CommandMode::SafeStop);
         for (index, command) in commands.iter().enumerate() {
             assert!(command.is_within_bounds(), "{command:?}");

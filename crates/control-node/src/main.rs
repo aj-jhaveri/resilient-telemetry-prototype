@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use protocol::{
-    Command, CommandMode, ControlState, Controller, DEFAULT_CONTROL_ADDR, DEFAULT_TIMEOUT_MS,
-    MAX_DATAGRAM_BYTES,
+    Command, CommandMode, ControlState, Controller, ControllerConfig, Setpoint,
+    DEFAULT_CONTROL_ADDR, DEFAULT_RECOVERY_PACKETS, DEFAULT_TARGET_HEADING_DEG,
+    DEFAULT_TARGET_SPEED_MPS, DEFAULT_TIMEOUT_MS, MAX_DATAGRAM_BYTES,
 };
 use tracing::{error, info, warn};
 
@@ -39,10 +40,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: &Args) -> std::io::Result<()> {
+fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    let config = ControllerConfig {
+        timeout: Duration::from_millis(args.timeout_ms),
+        recovery_packets: DEFAULT_RECOVERY_PACKETS,
+        setpoint: Setpoint::new(DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS)?,
+    };
     let socket = UdpSocket::bind(args.bind)?;
     socket.set_read_timeout(Some(POLL_INTERVAL))?;
-    let mut controller = Controller::new(Duration::from_millis(args.timeout_ms));
+    let mut controller = Controller::new(config);
     let mut buf = vec![0_u8; MAX_DATAGRAM_BYTES];
     info!(bind = %args.bind, timeout_ms = args.timeout_ms, state = ?controller.state(), "control-node started");
 
@@ -71,7 +77,14 @@ fn poll_once(socket: &UdpSocket, controller: &mut Controller, buf: &mut [u8]) {
                         "accepted telemetry"
                     );
                     log_transition(before, controller.state());
-                    log_command(&update.command);
+                    match &update.command {
+                        Some(command) => log_command(command),
+                        None => info!(
+                            streak = controller.recovery_streak(),
+                            needed = controller.recovery_packets(),
+                            "recovery in progress; staying in SafeStop"
+                        ),
+                    }
                 }
                 Err(rejection) => {
                     warn!(%from, bytes = len, reason = %rejection, "ignored datagram")
@@ -122,6 +135,15 @@ mod tests {
     use super::*;
     use protocol::Telemetry;
 
+    fn test_controller() -> Controller {
+        Controller::new(ControllerConfig {
+            timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
+            recovery_packets: DEFAULT_RECOVERY_PACKETS,
+            setpoint: Setpoint::new(DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS)
+                .expect("setpoint"),
+        })
+    }
+
     fn control_socket() -> (UdpSocket, UdpSocket) {
         let receiver = UdpSocket::bind("127.0.0.1:0").expect("bind receiver");
         receiver
@@ -135,7 +157,7 @@ mod tests {
     fn valid_telemetry_over_udp_becomes_autonomous() {
         let (receiver, sender) = control_socket();
         let target = receiver.local_addr().expect("local addr");
-        let mut controller = Controller::new(Duration::from_millis(DEFAULT_TIMEOUT_MS));
+        let mut controller = test_controller();
         let mut buf = vec![0_u8; MAX_DATAGRAM_BYTES];
 
         let bytes = Telemetry::simulated(1, 0).encode().expect("encode");
@@ -150,7 +172,7 @@ mod tests {
     fn bad_datagram_and_read_timeout_leave_node_waiting() {
         let (receiver, sender) = control_socket();
         let target = receiver.local_addr().expect("local addr");
-        let mut controller = Controller::new(Duration::from_millis(DEFAULT_TIMEOUT_MS));
+        let mut controller = test_controller();
         let mut buf = vec![0_u8; MAX_DATAGRAM_BYTES];
 
         sender.send_to(b"not telemetry", target).expect("send");

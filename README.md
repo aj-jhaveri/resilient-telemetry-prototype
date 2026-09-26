@@ -79,8 +79,9 @@ cargo run -q -p sensor-node -- --interval-ms 500 --count 10
 Normal demo, in `control-node`:
 
 - `state transition from=WaitingForTelemetry to=Autonomous` on sequence 1.
-- An `accepted telemetry` line and an `Autonomous` command
-  (`rudder=0.0 throttle=0.25 reason=valid_telemetry`) for each of the 20 packets.
+- An `accepted telemetry` line and an `Autonomous` command with
+  `reason=valid_telemetry` for each of the 20 packets. Its rudder and throttle
+  come from the proportional control law.
 - About 750 ms after the last packet, a single
   `state transition from=Autonomous to=SafeStop`, followed by one `SafeStop` command
   (`rudder=0.0 throttle=0.0 reason=telemetry_timeout`). No further SafeStop lines
@@ -91,8 +92,9 @@ Packet-loss demo:
 - `link-sim` logs `dropped packet` for packets 2, 4, 6, 8, and 10, and
   `forwarded packet` for the others.
 - `control-node` accepts sequences 1, 3, 5, 7, and 9. Each dropped packet leaves
-  a gap of about 1000 ms, which exceeds the 750 ms timeout. After each
-  accepted packet, the node enters `SafeStop` once, then returns to
-  `Autonomous` when the next accepted packet arrives.
+  a gap of about 1000 ms, which exceeds the 750 ms timeout. The node enters
+  `SafeStop` once, about 750 ms after sequence 1, and stays there. Leaving
+  SafeStop needs 3 consecutive packets, each less than 750 ms apart, so each
+  later accepted packet logs `recovery in progress` with `streak=1`.
 - The gaps in sequence numbers are accepted, because only duplicates and
   decreases are rejected.

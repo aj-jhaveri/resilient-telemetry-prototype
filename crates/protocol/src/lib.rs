@@ -15,7 +15,8 @@ pub use command::{
     CommandValidationError,
 };
 pub use control::{
-    Command, CommandMode, CommandReason, ControlState, Controller, Rejection, Update,
+    Command, CommandMode, CommandReason, ControlState, Controller, ControllerConfig, Rejection,
+    Update,
 };
 pub use p_control::{p_control, Setpoint, SetpointError};
 pub use plant::{heading_error_deg, wrap_heading_deg, Actuation, PlantState};
@@ -47,15 +48,14 @@ pub const RUDDER_MAX: f64 = 1.0;
 /// Inclusive throttle bounds for any emitted command.
 pub const THROTTLE_MIN: f64 = 0.0;
 pub const THROTTLE_MAX: f64 = 1.0;
-/// Fixed values used by an `Autonomous` command.
-pub const AUTONOMOUS_RUDDER: f64 = 0.0;
-pub const AUTONOMOUS_THROTTLE: f64 = 0.25;
 /// Fixed values used by a `SafeStop` command.
 pub const SAFE_STOP_RUDDER: f64 = 0.0;
 pub const SAFE_STOP_THROTTLE: f64 = 0.0;
 
 /// Default freshness timeout used by `control-node`.
 pub const DEFAULT_TIMEOUT_MS: u64 = 750;
+/// Consecutive fresh packets `control-node` needs to leave SafeStop.
+pub const DEFAULT_RECOVERY_PACKETS: u32 = 3;
 /// The only command message version this build sends or accepts.
 pub const COMMAND_VERSION: u8 = 1;
 /// Default command watchdog used by `sensor-node`. It is longer than
