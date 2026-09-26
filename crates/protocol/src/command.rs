@@ -203,7 +203,7 @@ impl CommandReceiver {
 mod tests {
     use super::*;
     use crate::{
-        Controller, ControllerConfig, Setpoint, Telemetry, DEFAULT_COMMAND_TIMEOUT_MS,
+        Controller, ControllerConfig, PlantState, Setpoint, DEFAULT_COMMAND_TIMEOUT_MS,
         DEFAULT_RECOVERY_PACKETS, DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS,
         DEFAULT_TIMEOUT_MS,
     };
@@ -254,7 +254,7 @@ mod tests {
                 .expect("setpoint"),
         });
         let command = controller
-            .on_telemetry(&Telemetry::simulated(1, 0), Instant::now())
+            .on_telemetry(&PlantState::initial().to_telemetry(1, 0), Instant::now())
             .expect("accepted")
             .command
             .expect("autonomous command");

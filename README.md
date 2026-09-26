@@ -21,13 +21,14 @@ See [DESIGN.md](DESIGN.md) for the rules and how they are tested.
 
 This is a learning prototype. It is not production software, vessel software,
 embedded software, a navigation system, real-time software,  or safety-certified
-software, and it is not suitable for controlling physical hardware. Commands are only logged. They are never sent anywhere.
+software, and it is not suitable for controlling physical hardware. Commands only drive a simulated vessel plant inside
+`sensor-node`.
 
 ## Requirements
 
 - Linux or macOS. Networking uses only `std::net::UdpSocket`.
 - Rust stable toolchain with `cargo`, `rustfmt`, and `clippy`.
-- UDP ports 9100 and 9200 free on `127.0.0.1` for the demos.
+- UDP ports 9100, 9200, and 9300 free on `127.0.0.1` for the demos.
 
 ## Build and test
 

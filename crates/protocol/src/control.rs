@@ -277,6 +277,7 @@ impl Controller {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::plant::PlantState;
     use crate::telemetry::ValidationError;
     use crate::{
         DEFAULT_RECOVERY_PACKETS, DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS,
@@ -306,7 +307,7 @@ mod tests {
     }
 
     fn telemetry(sequence: u64) -> Telemetry {
-        Telemetry::simulated(sequence, 0)
+        PlantState::initial().to_telemetry(sequence, 0)
     }
 
     fn autonomous_at(sequence: u64, now: Instant) -> Controller {
@@ -510,7 +511,7 @@ mod tests {
         let t0 = Instant::now();
         let mut controller = controller();
         for (sequence, sent_at_ms) in [(1, 0), (2, u128::MAX)] {
-            let sample = Telemetry::simulated(sequence, sent_at_ms);
+            let sample = PlantState::initial().to_telemetry(sequence, sent_at_ms);
             assert!(controller.on_telemetry(&sample, t0).is_ok());
             assert_eq!(controller.tick(t0 + timeout() - ONE_MS), None);
             assert_eq!(controller.state(), ControlState::Autonomous);

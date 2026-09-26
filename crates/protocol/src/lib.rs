@@ -66,6 +66,8 @@ pub const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 1000;
 pub const DEFAULT_LINK_ADDR: &str = "127.0.0.1:9100";
 /// Address `control-node` binds and `link-sim` forwards to by default.
 pub const DEFAULT_CONTROL_ADDR: &str = "127.0.0.1:9200";
+/// Address `sensor-node` binds to send telemetry and receive commands.
+pub const DEFAULT_SENSOR_ADDR: &str = "127.0.0.1:9300";
 /// Receive buffer size; large enough for any UDP payload.
 pub const MAX_DATAGRAM_BYTES: usize = 65_536;
 

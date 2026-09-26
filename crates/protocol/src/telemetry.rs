@@ -4,15 +4,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    BATTERY_MAX_PERCENT, BATTERY_MIN_PERCENT, HEADING_MAX_DEG, HEADING_MIN_DEG,
-    INITIAL_BATTERY_PERCENT, INITIAL_LATITUDE_DEG, INITIAL_LONGITUDE_DEG, LATITUDE_MAX_DEG,
+    BATTERY_MAX_PERCENT, BATTERY_MIN_PERCENT, HEADING_MAX_DEG, HEADING_MIN_DEG, LATITUDE_MAX_DEG,
     LATITUDE_MIN_DEG, LONGITUDE_MAX_DEG, LONGITUDE_MIN_DEG, SPEED_MAX_MPS, SPEED_MIN_MPS,
     SUPPORTED_VERSION,
 };
-
-// Fixed heading and speed used by `Telemetry::simulated`.
-const SIMULATED_HEADING_DEG: f64 = 90.0;
-const SIMULATED_SPEED_MPS: f64 = 1.5;
 
 /// One telemetry sample as carried in a single UDP datagram.
 ///
@@ -60,20 +55,6 @@ pub enum DecodeError {
 }
 
 impl Telemetry {
-    /// Builds the fixed simulated sample sent by `sensor-node`.
-    pub fn simulated(sequence: u64, sent_at_ms: u128) -> Self {
-        Self {
-            version: SUPPORTED_VERSION,
-            sequence,
-            sent_at_ms,
-            latitude_deg: INITIAL_LATITUDE_DEG,
-            longitude_deg: INITIAL_LONGITUDE_DEG,
-            heading_deg: SIMULATED_HEADING_DEG,
-            speed_mps: SIMULATED_SPEED_MPS,
-            battery_percent: INITIAL_BATTERY_PERCENT,
-        }
-    }
-
     /// Serializes to the JSON wire format.
     pub fn encode(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
@@ -130,11 +111,12 @@ impl Telemetry {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::plant::PlantState;
 
     const STEP: f64 = 0.001;
 
     fn sample() -> Telemetry {
-        Telemetry::simulated(7, 1_700_000_000_123)
+        PlantState::initial().to_telemetry(7, 1_700_000_000_123)
     }
 
     fn with(edit: impl FnOnce(&mut Telemetry)) -> Telemetry {
@@ -144,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn simulated_sample_is_valid() {
+    fn initial_plant_sample_is_valid() {
         assert_eq!(sample().validate(), Ok(()));
     }
 
@@ -163,7 +145,7 @@ mod tests {
             ("empty", String::new()),
             ("not json", "hello".to_owned()),
             ("truncated", valid[..valid.len() / 2].to_owned()),
-            ("missing field", valid.replace(",\"speed_mps\":1.5", "")),
+            ("missing field", valid.replace(",\"speed_mps\":0.0", "")),
             (
                 "wrong type",
                 valid.replace("\"sequence\":7", "\"sequence\":\"7\""),
@@ -175,7 +157,7 @@ mod tests {
             ("unknown field", valid.replace('}', ",\"extra\":1}")),
             (
                 "NaN literal",
-                valid.replace("\"heading_deg\":90.0", "\"heading_deg\":NaN"),
+                valid.replace("\"heading_deg\":0.0", "\"heading_deg\":NaN"),
             ),
         ];
         for (name, input) in cases {

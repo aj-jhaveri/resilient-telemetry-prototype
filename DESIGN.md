@@ -4,9 +4,10 @@
 
 A local learning prototype with three synchronous processes connected by UDP.
 It covers message versioning, boundary validation, sequence checks, freshness
-based on a local monotonic clock, and an explicit safe state. It has no async
-runtime, no command transport, and no hardware interface. It is not
-production, real-time, or safety-certified software.
+based on a local monotonic clock, and an explicit safe state. `control-node`
+sends validated command datagrams directly to `sensor-node`, which runs a
+simulated vessel plant. There is no async runtime and no hardware interface.
+It is not production, real-time, or safety-certified software.
 
 `protocol` holds the telemetry type, validation, the `Controller` state
 machine, and shared constants. The three binaries are thin wrappers around it.
@@ -21,7 +22,9 @@ Each datagram is one JSON `Telemetry` object with these fields: `version: u8`,
 `sequence: u64`, `sent_at_ms: u128`, `latitude_deg`, `longitude_deg`,
 `heading_deg`, `speed_mps` (all `f64`), and `battery_percent: f32`.
 `sensor-node` starts at sequence 1 and increments by one per packet. It sends
-fixed, valid, Austin-like values and the current Unix-millisecond time.
+the simulated plant's state and the current Unix-millisecond time. Commands
+go from `control-node` to `sensor-node` on port 9300 and do not pass through
+`link-sim`.
 
 ## Validation
 
@@ -120,5 +123,6 @@ reordering.
 - Timing depends on OS scheduling, with no real-time guarantees.
 - There is no authentication or integrity protection. Any local process can
   send datagrams.
-- Commands are only logged, never transmitted or applied.
+- Commands reach only the simulated plant, and the command path has no
+  injected faults.
 - Only one message version is supported, with no negotiation.
