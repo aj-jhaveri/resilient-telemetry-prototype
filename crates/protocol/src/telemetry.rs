@@ -4,17 +4,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    BATTERY_MAX_PERCENT, BATTERY_MIN_PERCENT, HEADING_MAX_DEG, HEADING_MIN_DEG, LATITUDE_MAX_DEG,
+    BATTERY_MAX_PERCENT, BATTERY_MIN_PERCENT, HEADING_MAX_DEG, HEADING_MIN_DEG,
+    INITIAL_BATTERY_PERCENT, INITIAL_LATITUDE_DEG, INITIAL_LONGITUDE_DEG, LATITUDE_MAX_DEG,
     LATITUDE_MIN_DEG, LONGITUDE_MAX_DEG, LONGITUDE_MIN_DEG, SPEED_MAX_MPS, SPEED_MIN_MPS,
     SUPPORTED_VERSION,
 };
 
-// Fixed, valid, Austin-like values used by the simulated sensor.
-const SIMULATED_LATITUDE_DEG: f64 = 30.2672;
-const SIMULATED_LONGITUDE_DEG: f64 = -97.7431;
+// Fixed heading and speed used by `Telemetry::simulated`.
 const SIMULATED_HEADING_DEG: f64 = 90.0;
 const SIMULATED_SPEED_MPS: f64 = 1.5;
-const SIMULATED_BATTERY_PERCENT: f32 = 87.5;
 
 /// One telemetry sample as carried in a single UDP datagram.
 ///
@@ -68,11 +66,11 @@ impl Telemetry {
             version: SUPPORTED_VERSION,
             sequence,
             sent_at_ms,
-            latitude_deg: SIMULATED_LATITUDE_DEG,
-            longitude_deg: SIMULATED_LONGITUDE_DEG,
+            latitude_deg: INITIAL_LATITUDE_DEG,
+            longitude_deg: INITIAL_LONGITUDE_DEG,
             heading_deg: SIMULATED_HEADING_DEG,
             speed_mps: SIMULATED_SPEED_MPS,
-            battery_percent: SIMULATED_BATTERY_PERCENT,
+            battery_percent: INITIAL_BATTERY_PERCENT,
         }
     }
 
