@@ -280,8 +280,8 @@ mod tests {
     use crate::plant::PlantState;
     use crate::telemetry::ValidationError;
     use crate::{
-        DEFAULT_RECOVERY_PACKETS, DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS,
-        DEFAULT_TIMEOUT_MS,
+        DEFAULT_POLL_INTERVAL_MS, DEFAULT_RECOVERY_PACKETS, DEFAULT_TARGET_HEADING_DEG,
+        DEFAULT_TARGET_SPEED_MPS, DEFAULT_TIMEOUT_MS,
     };
 
     const ONE_MS: Duration = Duration::from_millis(1);
@@ -569,7 +569,7 @@ mod tests {
         let t0 = Instant::now();
         let mut controller = controller();
         let packet_gap = Duration::from_millis(1000);
-        let poll = Duration::from_millis(50);
+        let poll = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS);
         let mut commands = Vec::new();
         for index in 0..10_u32 {
             let arrival = t0 + packet_gap * index;

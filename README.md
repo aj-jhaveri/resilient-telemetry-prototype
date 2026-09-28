@@ -30,19 +30,19 @@ See [DESIGN.md](DESIGN.md) for the rules, the plant model, and the tests.
 ## Limitations
 
 This is a learning prototype. It is not production software, vessel software,
-embedded software, a navigation system, real-time software, safety-certified
-software, or DoD-compliant software. It is not suitable for controlling
-physical hardware. Commands only drive a simulated vessel plant inside
-`sensor-node`, and its parameters are illustrative. The command path has no
-injected faults. Restarting `control-node` restarts its command sequence at
-1, so a running `sensor-node` rejects those commands until it is restarted
-too. The demos below were verified on macOS only.
+embedded software, a navigation system, real-time software, or safety-certified
+software, and it is not suitable for controlling physical hardware. Commands
+only drive a simulated vessel plant inside `sensor-node`, and its parameters
+are illustrative. The command path has no injected faults. Restarting
+`control-node` restarts its command sequence at 1, so a running `sensor-node`
+rejects those commands until it is restarted too. The demos below were verified
+on macOS only.
 
 ## Requirements
 
 - Linux or macOS. Networking uses only `std::net::UdpSocket`. Only macOS has
   been tested.
-- Rust stable toolchain with `cargo`, `rustfmt`, and `clippy`.
+- Rust 1.87+ stable toolchain with `cargo`, `rustfmt`, and `clippy`.
 - UDP ports 9100, 9200, and 9300 free on `127.0.0.1` for the demos.
 
 ## Build and test

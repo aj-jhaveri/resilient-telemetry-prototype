@@ -10,8 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use protocol::{
-    CommandReceiver, PlantState, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_LINK_ADDR,
-    DEFAULT_SENSOR_ADDR, MAX_DATAGRAM_BYTES,
+    CommandReceiver, PlantState, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_INTERVAL_MS,
+    DEFAULT_LINK_ADDR, DEFAULT_SENSOR_ADDR, MAX_DATAGRAM_BYTES,
 };
 use tracing::{error, info, warn};
 
@@ -22,7 +22,7 @@ struct Args {
     #[arg(long, default_value = DEFAULT_LINK_ADDR)]
     destination: SocketAddr,
     /// Milliseconds between packets; also the plant's simulation step.
-    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = DEFAULT_INTERVAL_MS, value_parser = clap::value_parser!(u64).range(1..))]
     interval_ms: u64,
     /// Stop after this many packets. Runs until interrupted if omitted.
     #[arg(long)]

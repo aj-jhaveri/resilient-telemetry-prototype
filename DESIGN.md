@@ -49,8 +49,8 @@ well-formed JSON that breaks a rule, checked in this order:
 `CommandMessage::decode` is the command boundary in `sensor-node`. It checks
 that `version` equals `COMMAND_VERSION` (1), that the values are finite, that
 rudder is in `[-1, 1]` and throttle in `[0, 1]`, that mode matches reason, and
-that a `safe_stop` carries zero rudder and throttle. All limits are constants
-in `crates/protocol/src/lib.rs`.
+that a `safe_stop` carries zero rudder and throttle. All defaults and limits
+live in `crates/protocol/src/lib.rs`.
 
 ## Sequence handling
 
@@ -81,22 +81,23 @@ session IDs.
 - **Recovery hysteresis:** leaving `SafeStop` needs `--recovery-packets`
   (default 3) consecutive accepted packets, each less than `timeout` after the
   previous one. A longer gap resets the streak to 1. No command is emitted
-  until the streak completes. So with packets 1000 ms apart, the node enters
-  `SafeStop` once and stays there instead of toggling. A value of 1
-  reproduces Phase 1.
-- `WaitingForTelemetry` never times out, and `sent_at_ms` is never read.
+  until the streak completes. With packets 1000 ms apart, the node enters
+  `SafeStop` once and stays there instead of toggling. A value of 1 recovers
+  on the first fresh packet.
+- `WaitingForTelemetry` never times out, and `sent_at_ms` never affects
+  freshness.
 
-`control-node` polls with a 50 ms read timeout, so it detects SafeStop up to
-about 50 ms after the deadline, plus scheduling delay. `Command` fields are
-private. Its only constructors take a clamped `Actuation` or the SafeStop
-constants, so every command is bounded.
+`control-node` polls with a 50 ms read timeout, detecting SafeStop within
+about 50 ms of the deadline, plus scheduling delay. `Command` fields are
+private; its constructors take a clamped `Actuation` or SafeStop constants, so
+every command is bounded.
 
 **Sensor-side watchdog:** `CommandReceiver` applies the latest valid command.
 It returns zero rudder and throttle before the first command, and once
-`--command-timeout-ms` (default 1000) passes without one. It reports the
-expiry once. The default is longer than the 750 ms telemetry timeout, because
-commands are sent only when telemetry is accepted. `sensor-node` checks the
-watchdog once per step, so the zero takes effect up to one interval late.
+`--command-timeout-ms` (default 1000) passes without one. It reports expiry
+once. The default exceeds the 750 ms telemetry timeout because commands are
+sent only when telemetry is accepted. `sensor-node` checks the watchdog once
+per step, so the zero takes effect up to one interval late.
 
 ## Plant model and control
 
@@ -106,10 +107,10 @@ rudder turns clockwise.
 
 - `heading ← wrap(heading + rudder · 10 °/s · dt)`, where `wrap` maps into
   `[0, 360)`. It guards the case where `rem_euclid` rounds a tiny negative
-  input up to exactly 360.
+  input up to 360.
 - `speed ← speed + α · (throttle · 5 m/s − speed)`, with
-  `α = 1 − e^(−dt/2 s)`. This is the exact solution of a first-order lag, so it
-  never overshoots and does not depend on step size.
+  `α = 1 − e^(−dt/2 s)`. This exact first-order lag solution never overshoots
+  and is step-size independent.
 - Position uses flat-earth dead reckoning (`111 320` m per degree of
   latitude), which is not meaningful near the poles. Battery drains at
   0.05 %/s times throttle.
@@ -122,11 +123,11 @@ The P law (`p_control`) is pure:
 - Both outputs are clamped to their bounds.
 
 Heading needs only P, because the plant integrates rudder. Throttle adds
-feedforward, because P alone would settle below the target: at 5/3.5 ≈ 1.43 m/s
+feedforward, because P alone settles below the target: at 5/3.5 ≈ 1.43 m/s
 instead of 2.0. The closed-loop convergence test fails if the feedforward
-term is removed. There is no integral
-or derivative term. `Setpoint` rejects non-finite or out-of-range targets,
-including `NaN`, which clap accepts for `f64` flags.
+term is removed. There is no integral or derivative term. `Setpoint` rejects
+non-finite or out-of-range targets, including `NaN`, which clap accepts for
+`f64` flags.
 
 ## Deterministic link behavior
 
@@ -139,23 +140,23 @@ reordering.
 
 ## Tests
 
-`cargo test --workspace` runs these tests. The pure-logic tests use a fixed
-`dt` and synthetic `Instant`s, with no sockets or sleeping.
+`cargo test --workspace` runs these tests. Pure-logic tests use a fixed `dt`
+and synthetic `Instant`s, with no sockets or sleeping.
 
 - **Messages:** round-trips, malformed input, each rule at its boundaries,
   non-finite values, and command mode/reason consistency.
-- **Controller:** sequence rules, the timeout at exactly the deadline, a
-  single SafeStop, late-arrival timeouts, the recovery streak and its reset,
-  no toggling under 1000 ms gaps, and commands equal to the P law's output.
-- **Plant and P law:** heading wrapping, clamping, the exact and
-  step-independent speed response, coast-down, valid telemetry over 10,000
-  steps, and closed-loop convergence (including across north) with a one-step
-  command delay.
-- **Watchdog:** expiry exactly at the timeout, reported once; rejected
-  datagrams do not refresh it.
+- **Controller:** sequence rules, timeout at the deadline, single SafeStop,
+  late-arrival timeouts, recovery streak and reset, no toggling under 1000 ms
+  gaps, and commands matching the P law.
+- **Plant and P law:** heading wrapping, clamping, exact step-independent
+  speed response, coast-down, valid telemetry over 10,000 steps, and
+  closed-loop convergence (including across north) with a one-step command
+  delay.
+- **Watchdog:** expiry at the timeout, reported once; rejected datagrams do
+  not refresh it.
+- **Link fault policy:** `link-sim` drop patterns for N = 0, 1, and 3.
 - **Sockets:** `control-node` sends Autonomous and single SafeStop commands.
   `sensor-node` applies a received command and sends valid telemetry.
-  `link-sim` drop patterns for N = 0, 1, and 3.
 
 ## Limitations
 
@@ -163,7 +164,8 @@ reordering.
   that path by hand, verified on macOS only.
 - Timing depends on OS scheduling, with no real-time guarantees.
 - There is no authentication or integrity protection. Any local process can
-  send datagrams to any node.
+  send datagrams to any node; a forged `sequence = u64::MAX` locks out that
+  sender until restart.
 - The command path has no injected faults.
 - Restarting a sender requires restarting its receiver (see Sequence
   handling).

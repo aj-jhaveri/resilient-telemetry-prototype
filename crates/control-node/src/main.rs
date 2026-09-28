@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use protocol::{
     Command, CommandMode, ControlState, Controller, ControllerConfig, Setpoint,
-    DEFAULT_CONTROL_ADDR, DEFAULT_RECOVERY_PACKETS, DEFAULT_SENSOR_ADDR,
+    DEFAULT_CONTROL_ADDR, DEFAULT_POLL_INTERVAL_MS, DEFAULT_RECOVERY_PACKETS, DEFAULT_SENSOR_ADDR,
     DEFAULT_TARGET_HEADING_DEG, DEFAULT_TARGET_SPEED_MPS, DEFAULT_TIMEOUT_MS, MAX_DATAGRAM_BYTES,
 };
 use tracing::{error, info, warn};
 
 /// Socket read timeout; bounds how late a freshness check can run.
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const POLL_INTERVAL: Duration = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS);
 
 #[derive(Debug, Parser)]
 #[command(

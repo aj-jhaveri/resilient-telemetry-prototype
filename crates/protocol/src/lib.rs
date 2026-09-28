@@ -52,6 +52,10 @@ pub const THROTTLE_MAX: f64 = 1.0;
 pub const SAFE_STOP_RUDDER: f64 = 0.0;
 pub const SAFE_STOP_THROTTLE: f64 = 0.0;
 
+/// Default telemetry interval and plant step used by `sensor-node`.
+pub const DEFAULT_INTERVAL_MS: u64 = 100;
+/// Socket read timeout used by `control-node` to poll freshness.
+pub const DEFAULT_POLL_INTERVAL_MS: u64 = 50;
 /// Default freshness timeout used by `control-node`.
 pub const DEFAULT_TIMEOUT_MS: u64 = 750;
 /// Consecutive fresh packets `control-node` needs to leave SafeStop.
